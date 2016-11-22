@@ -1,0 +1,500 @@
+---
+title: "Dataiku - Testing dataset"
+author: "Xavier Prudent"
+date: "November 18, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE,warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+## Decision tree
+library(rpart)
+library(rpart.plot)
+## Neural network
+library(nnet)
+## Dev tools
+library("devtools")
+source_url('https://gist.githubusercontent.com/fawda123/7471137/raw/466c1474d0a505ff044412703516c34f1a4684a5/nnet_plot_update.r')
+## ROC
+library("pROC")
+```
+
+## Retrieving the data file
+
+```{r,message=FALSE,warning=FALSE}
+## Download the data
+URL <- "http://thomasdata.s3.amazonaws.com/ds/us_census_full.zip"
+DESTFILE <- "us_census_full.zip"
+#download.file( url = URL, destfile = DESTFILE )
+## Unzip the data file
+#unzip( DESTFILE )
+```
+
+## Visualization of the data
+
+The names and position of the columns have been extracted and checked by hand, even though that is feasible automatically.
+
+```{r,message=FALSE,warning=FALSE}
+## Path to the learning dataset
+LEARN.DATA <- "us_census_full/census_income_learn.csv"
+
+## Replace question marks by NA, and remove white spaces
+#system(paste("sed s/\'?\'/'NA'/g",LEARN.DATA,"> foo; mv foo", LEARN.DATA))
+#system(paste("sed s/\' \'//g",LEARN.DATA,"> foo; mv foo", LEARN.DATA))
+
+## Open the learning dataset
+LEARN.DATA <- read.csv(LEARN.DATA, stringsAsFactors=FALSE)
+
+## Extracting the names of the columns
+HEADER <- read.table("header.txt")
+colnames(LEARN.DATA) <- unlist(HEADER)
+
+## Extracting the description of the each column
+HEADER.DESCR <- read.table("column_description.txt")
+HEADER.DESCR <- unlist(HEADER.DESCR)
+
+## Create a dataframe for the variables characteristics
+VAR.DF <- data.frame( HEADER, HEADER.DESCR)
+colnames(VAR.DF) <- c("name","descr")
+
+## Loop over each column
+DATA.FRAC.MISS <- c()
+DATA.CLASS <- c()
+UNIQ.VAL.DAT <- c()
+DATA.MEAN <- c()
+DATA.SD <- c()
+DATA.MIN <- c()
+DATA.MAX <- c()
+for( icol in 1:ncol(LEARN.DATA)){
+  
+  ## Extract the data for this column
+  COL.DAT <- LEARN.DATA[,icol]
+  
+  ## Class of that data
+  DATA.CLASS <- c(DATA.CLASS, class(COL.DAT) )
+  
+  ## Number of unique values
+  UNIQ.VAL.DAT <- c( UNIQ.VAL.DAT, length(unique(COL.DAT)) )
+  
+  ## Fraction of missing values
+  N.MISS <- length(which(is.na(COL.DAT)))
+  FRAC.MISS <- 100*N.MISS / length(COL.DAT)
+  DATA.FRAC.MISS <- c( DATA.FRAC.MISS, FRAC.MISS )
+  
+  ## Mean value and standard deviation, and min max
+  if( DATA.CLASS != "character" ){
+    DATA.MEAN <- c(DATA.MEAN, mean(COL.DAT,na.rm = TRUE))
+    DATA.SD <- c( DATA.SD, sd(COL.DAT,na.rm = TRUE))
+    DATA.MIN <- c( DATA.MIN, min(COL.DAT,na.rm = TRUE))
+    DATA.MAX <- c( DATA.MAX, max(COL.DAT,na.rm = TRUE))
+  } else{
+     DATA.MEAN <- c(DATA.MEAN, NA)
+    DATA.SD <- c( DATA.SD, NA)
+DATA.MIN <- c(DATA.MIN, NA)
+    DATA.MAX <- c( DATA.MAX, NA)
+  }
+}
+
+## Add this info to the dataframe
+VAR.DF$missInfo <- DATA.FRAC.MISS
+VAR.DF$class <- DATA.CLASS
+VAR.DF$uniqVal <- UNIQ.VAL.DAT
+VAR.DF$mean <- DATA.MEAN
+VAR.DF$sd <- DATA.SD
+VAR.DF$min <- DATA.MIN
+VAR.DF$max <- DATA.MAX
+```
+
+The following plot summarizes the class of the 42 columns, together with the fraction of missing data:
+```{r,message=FALSE,warning=FALSE}
+plot(DATA.FRAC.MISS,col="white", xlab="Variables",ylab="Fraction of missing data (%)")
+for( icol in 1:ncol(LEARN.DATA)){
+if( DATA.CLASS[icol] == "character" ) DOT.COLOR <- "red"
+else if( DATA.CLASS[icol] == "integer" ) DOT.COLOR <- "blue"
+else if( DATA.CLASS[icol] == "numeric" ) DOT.COLOR <- "green"
+else DOT.COLOR <- "black"
+points(icol,DATA.FRAC.MISS[icol], pch=16, cex=1, col=DOT.COLOR)
+if(DATA.FRAC.MISS[icol] > 0){
+  if(DATA.FRAC.MISS[icol] > 40 ){
+    agl <- -90
+   y.offset <- -2
+  }
+else{
+  agl <- 90
+ y.offset <- 2
+  }
+  text(as.character(HEADER.DESCR[icol]),x=icol, y=DATA.FRAC.MISS[icol]+y.offset,cex=0.5, adj=c(0,0),srt=agl)
+}
+}
+legend(x=0,y=50,col=c("red","green","blue"),pch=16,legend = c("Character","Integer","Numeric"),cex=0.8,bty="n")
+```
+
+Most missing data arise from the intra-USA migration variables, and to a lesser extent from the variables related to the extra-USA immigration (origin of the parents and place of birth). 
+
+Most variables are of character type, the ones with the most unique values are the geographical ones (migration intra-, extra-USA). There is probably enough segmentation so that non linear correlations can be seen.
+
+```{r,message=FALSE,warning=FALSE}
+## Consider only character variables
+VAR.DF.CHAR <- subset(VAR.DF, class == "character")
+## Plot the number of unique values
+plot(VAR.DF.CHAR$uniqVal, type = "h", col="red", lwd=4, xlab="",ylab="Number of unique values",xaxt="n", main="Character variables")
+axis(side=1,at=seq(from=1,to=nrow(VAR.DF.CHAR),by=1),labels = VAR.DF.CHAR$descr, las=2, cex.axis=0.5)
+```
+
+Let's consider now the numerical variables (integer and float) :
+```{r,message=FALSE,warning=FALSE}
+## Consider only numeric variables
+VAR.DF.NUM <- subset(VAR.DF, (class == "integer" | class == "numeric") )
+## Plot the mean values
+par(mar=c(4,12,4,2))
+plot(c(1:nrow(VAR.DF.NUM))~VAR.DF.NUM$mean, ylab="",xlab="Mean values",main="Numeric variables", pch=16, col="brown",yaxt="n")
+axis(side=2,at=1:nrow(VAR.DF.NUM),labels = VAR.DF.NUM$descr, las=2, cex.axis=0.8)
+## Plot the max and min values
+par(mar=c(4,12,4,2))
+plot(c(1:nrow(VAR.DF.NUM))~VAR.DF.NUM$max, ylab="",xlab="Max and Min values",main="Numeric variables", pch=18, col="brown",yaxt="n")
+points(c(1:nrow(VAR.DF.NUM))~VAR.DF.NUM$min,pch=10, col="brown")
+axis(side=2,at=1:nrow(VAR.DF.NUM),labels = VAR.DF.NUM$descr, las=2, cex.axis=0.8)
+legend(x=7e4,y=12,col="brown",pch=c(10,18),legend = c("Min. values","Max. values"),cex=0.8,bty="n")
+```
+
+All numerical variables are positive, and go through highly different scales. Four variables in particular, counted in dollars, reach far higher values than the others. That will have to be carefully taken care of during the prediction stage.
+
+Let's plot now the distribution of all numerical variables (integers are in blue and the float ones are in green):
+
+```{r,message=FALSE,warning=FALSE}
+## Consider only numeric variables 
+VAR.DF.NUM <- subset(VAR.DF, (class == "integer" | class == "numeric") )
+## Extract the data
+LEARN.DATA.NUM <- LEARN.DATA[,which(colnames(LEARN.DATA)%in% VAR.DF.NUM$name)]
+## Plot a mosaic of distributions
+plot.var <- function(start,end){
+  if( start != end ) par(mfrow=c(2,2))
+for( ivar in start:end){
+  COL.DAT <- LEARN.DATA.NUM[,ivar]
+  NAME <- VAR.DF.NUM$descr[ivar]
+  CLASS <- VAR.DF.NUM$class[ivar]
+  if( CLASS == "integer") COLOR <- "blue"
+  if( CLASS == "numeric") COLOR <- "green"
+    h <- hist(COL.DAT,plot=FALSE)
+    plot(h$mids,h$counts,log="y",main=VAR.DF.NUM$descr[ivar], xlab="", pch=18, col=COLOR, ylab="log(counts)")
+}
+}
+plot.var(1,4)
+plot.var(5,8)
+plot.var(9,12)
+plot.var(13,13)
+```
+
+The categorical variables are modified to be of numerical integer state:
+```{r,message=FALSE,warning=FALSE}
+## Loop over all variables
+for( icol in 1:ncol(LEARN.DATA) ){
+  ## Consider categorical variables
+if( DATA.CLASS[icol] != "character" ) next()
+## List the unique values
+    COL.DAT <- LEARN.DATA[,icol]
+ UNIQ.VAL <- unique(COL.DAT)
+  NB.UNIQ.VAL <- length(UNIQ.VAL)
+  ## Replace their values by an integer
+ for( ival in 1:NB.UNIQ.VAL){
+   COL.DAT[COL.DAT==UNIQ.VAL[ival]] = ival
+    LEARN.DATA[,icol] <- as.numeric(COL.DAT)
+    DATA.MAX[icol] <- max(LEARN.DATA[,icol],na.rm = TRUE)
+    DATA.MIN[icol] <- min(LEARN.DATA[,icol],na.rm = TRUE)
+    DATA.MEAN[icol] <- mean(LEARN.DATA[,icol],na.rm = TRUE)
+    DATA.SD[icol] <- sd(LEARN.DATA[,icol],na.rm = TRUE)
+ }
+}
+  DATA.MAX <- as.numeric(DATA.MAX)
+    DATA.MIN <- as.numeric(DATA.MIN)
+    DATA.MEAN <- as.numeric(DATA.MEAN)
+    DATA.SD <- as.numeric(DATA.SD)
+```
+
+
+## Scaling of the data
+Because of the large differences in range between the variables, these are scaled to stay between 0 and 1 in order to improve further multi variable analysis. Only the response variable is kept raw.
+
+```{r,message=FALSE,warning=FALSE}
+## Remove all NA
+ LEARN.DATA.SCALED <- na.omit(LEARN.DATA)
+## Some variables are then constant, let's remove them
+LEARN.DATA.SCALED <- LEARN.DATA.SCALED[,apply(LEARN.DATA.SCALED, 2, var, na.rm=TRUE) != 0]
+## Loop over all variables
+for( icol in 1:ncol(LEARN.DATA.SCALED) ){
+  ## Keep the response raw
+    if( colnames(LEARN.DATA.SCALED)[icol] == "PEARNVAL") next()
+  ## Scale the predictor variables by doing X = (X - max(X) / (max(X)-min(X))
+  MIN <- min(LEARN.DATA.SCALED[,icol])
+  MAX <- max(LEARN.DATA.SCALED[,icol])
+   LEARN.DATA.SCALED[,icol] <- (LEARN.DATA.SCALED[,icol] - MIN) / ( MAX - MIN )
+}
+## Let's check how they look like now
+list.var <- 1:40
+n.var <- 6
+list.var <- split(list.var, ceiling(seq_along(list.var)/n.var))
+for( i in 1:length(list.var)){
+  list.var.plot <- as.vector(list.var[[i]])
+par(mar=c(8,4,4,2))
+boxplot(LEARN.DATA.SCALED[,list.var.plot], main="All scaled variables",xlab="",ylab="Scaled values",col="yellow",las=2,cex=0.8)
+}
+```
+
+## 1st Dependency study: Principal Component Analysis
+The goal is to predict the behavior of the 42th variable, a binary variable that says, whether an individual was able to save less or more than 50k dollars.
+Let's first consider simple linear correlations between all variables using a principal component analysis:
+```{r,message=FALSE,warning=FALSE}
+## Run PCA with the correlation matrix
+PCA <- princomp(LEARN.DATA.SCALED,cor=TRUE)
+## Plot the loadings
+LO=unclass(PCA$loadings)
+plot(LO[,1],LO[,2], pch=20, cex=2, col=rgb(0,0,0,0.3), xlab="PC1", ylab="PC2",main="PCA loadings", xlim=c(-0.5,0.5))
+## Plot the response variable
+LO1.R <- LO["PEARNVAL",1]
+LO2.R <- LO["PEARNVAL",2]
+points( LO1.R, LO2.R, cex=2, pch=20, col=rgb(1,0,0,0.8))
+## Distance to the response variable
+DIST <- sqrt( (LO1.R-LO[,1])^2 + (LO2.R-LO[,2])^2)
+hist(DIST,col="yellow",xlab="PCA distance to the response variable",ylab="Number of variables",main="",breaks=10)
+## What are the furthest variable away?
+VAR.REM <- names(which(DIST>0.3))
+print(VAR.REM)
+```
+
+Given linear correlations, it looks like the country of the parents, of the person considered as well as its citizenship, have little impact on the response variable. Given that these variables are also the ones with the most missing data, I choose to remove them from the analysis.
+
+```{r,message=FALSE,warning=FALSE}
+## Remove uncorrelated variables
+ LEARN.DATA <- LEARN.DATA[ , !(names(LEARN.DATA) %in% VAR.REM)]
+## Remove all NA
+ LEARN.DATA.SCALED <- na.omit(LEARN.DATA)
+ ## Some variables are then constant, let's remove them
+LEARN.DATA.SCALED <- LEARN.DATA.SCALED[,apply(LEARN.DATA.SCALED, 2, var, na.rm=TRUE) != 0]
+## Loop over all variables
+for( icol in 1:ncol(LEARN.DATA.SCALED) ){
+  ## Keep the response raw
+    if( colnames(LEARN.DATA.SCALED)[icol] == "PEARNVAL") next()
+  ## Scale the predictor variables by doing X = (X - max(X) / (max(X)-min(X))
+  MIN <- min(LEARN.DATA.SCALED[,icol])
+  MAX <- max(LEARN.DATA.SCALED[,icol])
+   LEARN.DATA.SCALED[,icol] <- (LEARN.DATA.SCALED[,icol] - MIN) / ( MAX - MIN )
+}
+```
+
+After removing uncorrelated variables, the NA and the constant variables, 34+1 variables are left.
+
+## Predictive methods: linear, NN and decision tree
+
+We are going to apply different predictive learning tools. Given the large number of variables and statistics, a decision tree seems relevant, for the sake of comparison we will also use a linear model and a neural network:
+
+Let's start with a simple linear regression
+```{r,message=FALSE,warning=FALSE}
+## Linear regression
+PRED.LIN <- lm(PEARNVAL ~ ., data = LEARN.DATA.SCALED)
+## Print the details
+SUM.LIN <- summary(PRED.LIN)
+print(SUM.LIN)
+## Get the t-values of the coefficients
+TVAL.LIN <- SUM.LIN$coefficients[,3]
+## Compare PCA distance and linear coefficients
+PCA.VEC <- c()
+TVAL.VEC <- c()
+NAME.VEC <- c()
+for( VAR in names(TVAL.LIN)){
+  x <- DIST[which(names(DIST)==VAR)]
+  y <- TVAL.LIN[which(names(TVAL.LIN)==VAR)]
+  if( length(x) == 0 | length(y) == 0 ) next()
+  PCA.VEC <- c( PCA.VEC,x)
+  TVAL.VEC <- c( TVAL.VEC, y)
+  NAME.VEC <- c( NAME.VEC, VAR )
+}
+ plot(PCA.VEC,TVAL.VEC,cex=2, pch=20, ylim=c(-60,100), col=rgb(0,0,0,0.3),xlab = "PCA distance to the response variable",ylab = "t-value of the linear regression")
+sh=0.005
+text(x=PCA.VEC+sh, y=TVAL.VEC+sh,labels=rownames(LO), adj=c(0,0), cex=0.5,srt=45)
+```
+
+The three most correlated values appear to be the capital gain and losses, plus the divident value. Because simplicity matters as much as precision, I also create a reduced linear regression with these 3 variables only
+
+```{r,message=FALSE,warning=FALSE}
+## Reduced sets of variables
+VAR.RED <- c("CAPLOSS","CAPGAIN","DIVVAL","PEARNVAL")
+LEARN.DATA.RED <- LEARN.DATA.SCALED[ , names(LEARN.DATA.SCALED) %in% VAR.RED]
+## Again linear regression
+PRED.LIN.RED <- lm(PEARNVAL ~ ., data = LEARN.DATA.RED)
+## Print the details
+SUM.LIN.RED <- summary(PRED.LIN.RED)
+print(SUM.LIN.RED)
+```
+
+It however does not look like improving the regression. We teach now a basic decision tree:
+
+```{r,message=FALSE,warning=FALSE}
+## Teach the decision tree
+PRED.DT <- rpart(PEARNVAL ~ ., data = LEARN.DATA.SCALED, method="anova")
+## Now on the reduced datasets
+PRED.DT.RED <- rpart(PEARNVAL ~ ., data = LEARN.DATA.RED, method="anova")
+## Print the details
+SUM.DT <- summary(PRED.DT)
+print(SUM.DT)
+## Plot the tree
+prp(PRED.DT)
+prp(PRED.DT.RED)
+## Plot the tree performance
+plotcp(PRED.DT)
+plotcp(PRED.DT.RED)
+```
+
+and a basic neural network with intermediate layers, plotting a full network with dozens of variables is cumbersome, hence we plot here only the reduced version:
+```{r,message=FALSE,warning=FALSE}
+## Run a neural network on the full dataset
+PRED.NN = nnet( PEARNVAL ~ ., data = LEARN.DATA.SCALED, size = 3, linout=TRUE, skip=TRUE, MaxNWts=1000, trace=FALSE, maxit=100)
+## Run on the reduced dataset
+PRED.NN.RED = nnet( PEARNVAL ~ ., data = LEARN.DATA.RED, size = 3, maxit=100)
+## Plot the reduced neural network
+plot.nnet(PRED.NN.RED,circle.cex = 0.5,cex.val = 0.5)
+```
+
+## Estimation of the performance
+We want now to estimate the performance of these prediction tools, and for that purpose will use a shuffled dataset of size 1000:
+  
+```{r,message=FALSE,warning=FALSE}
+## Create a shuffled dataset of 1000 entries
+LEARN.DATA.SHUF <- LEARN.DATA.SCALED[sample(nrow(LEARN.DATA.SCALED),size=1000),]
+## Predict the value of the response variable
+PRED.LIN.SHUF <- predict( PRED.LIN, LEARN.DATA.SHUF )
+PRED.NN.SHUF <- predict( PRED.NN, LEARN.DATA.SHUF )
+PRED.DT.SHUF <- predict( PRED.DT, LEARN.DATA.SHUF )
+PRED.LIN.RED.SHUF <- predict( PRED.LIN.RED, LEARN.DATA.SHUF )
+PRED.NN.RED.SHUF <- predict( PRED.NN.RED, LEARN.DATA.SHUF )
+PRED.DT.RED.SHUF <- predict( PRED.DT.RED, LEARN.DATA.SHUF )
+## Paste these predictions
+LEARN.DATA.SHUF$pred.lin <- PRED.LIN.SHUF
+LEARN.DATA.SHUF$pred.nn <- PRED.NN.SHUF
+LEARN.DATA.SHUF$pred.dt <- PRED.DT.SHUF
+LEARN.DATA.SHUF$pred.lin.red <- PRED.LIN.RED.SHUF
+LEARN.DATA.SHUF$pred.nn.red <- PRED.NN.RED.SHUF
+LEARN.DATA.SHUF$pred.dt.red <- PRED.DT.RED.SHUF
+## Plot the ROC for each method
+plot(roc(LEARN.DATA.SHUF$PEARNVAL,LEARN.DATA.SHUF$pred.lin), col="red")
+plot(roc(LEARN.DATA.SHUF$PEARNVAL,LEARN.DATA.SHUF$pred.nn), col="blue", add=TRUE)
+plot(roc(LEARN.DATA.SHUF$PEARNVAL,LEARN.DATA.SHUF$pred.dt), col="green", add=TRUE)
+## Reduced dataset
+plot(roc(LEARN.DATA.SHUF$PEARNVAL,LEARN.DATA.SHUF$pred.lin.red), lty="dotted", col="red", add=TRUE)
+plot(roc(LEARN.DATA.SHUF$PEARNVAL,LEARN.DATA.SHUF$pred.nn.red), col="blue", lty="dotted", add=TRUE)
+plot(roc(LEARN.DATA.SHUF$PEARNVAL,LEARN.DATA.SHUF$pred.dt.red), col="green", lty="dotted", add=TRUE)
+## Legend
+legend(x=0.4,y=0.4,col = c("red","blue","green","black","black"),legend = c("Linear","Neural network","Decision tree","Full dataset","Reduced dataset"), cex=0.7,lty=c(1,1,1,1,3), lwd=2,bty="n")
+```
+
+From these ROC, it looks like all methods perform in an equivalent way, the reduced dataset showing clearly lower performances. Simpler is better, I would hence choose the linear method.
+Given these ROC, we can get a cutoff based on a simple cost function that optimises sensitivity and specificity:
+
+```{r,message=FALSE,warning=FALSE}
+## Getting the ROC
+ROC.LIN.SHUF <- roc(LEARN.DATA.SHUF$PEARNVAL,LEARN.DATA.SHUF$pred.lin)
+ROC.NN.SHUF <- roc(LEARN.DATA.SHUF$PEARNVAL,LEARN.DATA.SHUF$pred.nn)
+ROC.DT.SHUF <- roc(LEARN.DATA.SHUF$PEARNVAL,LEARN.DATA.SHUF$pred.dt)
+## Cut off on each prediction
+CUT.LIN <- coords(ROC.LIN.SHUF, "best", ret = "threshold")
+CUT.NN <- coords(ROC.NN.SHUF, "best", ret = "threshold")
+CUT.DT <- coords(ROC.DT.SHUF, "best", ret = "threshold")
+## Sensitivity and specificity
+N <- 1000
+SENS.LIN <- nrow(subset(LEARN.DATA.SHUF, pred.lin < CUT.LIN & PEARNVAL == 1 )) / N
+SPE.LIN <- nrow(subset(LEARN.DATA.SHUF, pred.lin >= CUT.LIN & PEARNVAL == 2 )) / N
+SENS.NN <- nrow(subset(LEARN.DATA.SHUF, pred.nn < CUT.NN & PEARNVAL == 1 )) / N
+SPE.NN <- nrow(subset(LEARN.DATA.SHUF, pred.nn >= CUT.NN & PEARNVAL == 2 )) / N
+SENS.DT <- nrow(subset(LEARN.DATA.SHUF, pred.dt < CUT.DT & PEARNVAL == 1 )) / N
+SPE.DT <- nrow(subset(LEARN.DATA.SHUF, pred.dt >= CUT.DT & PEARNVAL == 2 )) / N
+## Plot these values
+plot( 0, xlab="Sensitivity",ylab="Specificity",xlim=c(0.5,1),ylim=c(0,0.2),col="white")
+grid(col = "gray",lty = "dotted")
+points(SENS.LIN, SPE.LIN,col="red",pch=20, cex=2)
+points(SENS.NN, SPE.NN,col="blue",pch=20, cex=2)
+points(SENS.DT, SPE.DT,col="green",pch=20, cex=2)
+legend(x=0.5,y=0.15,col = c("red","blue","green"),legend = c("Linear","Neural network","Decision tree"), cex=0.7,pt.cex=1,pch=20, bty="n")
+```
+
+## Study of the test sample with the predictive methods
+
+The test sample is now unblinded, let's open the test dataset file:
+
+```{r,message=FALSE,warning=FALSE}
+## Path to the test dataset
+TEST.DATA <- "us_census_full/census_income_test.csv"
+## Replace question marks by NA, and remove white spaces
+system(paste("sed s/\'?\'/'NA'/g",TEST.DATA,"> foo; mv foo", TEST.DATA))
+system(paste("sed s/\' \'//g",TEST.DATA,"> foo; mv foo", TEST.DATA))
+## Open the learning dataset
+TEST.DATA <- read.csv(TEST.DATA, stringsAsFactors=FALSE)
+## Extracting the names of the columns
+colnames(TEST.DATA) <- unlist(HEADER)
+## The testing set needs to be scaled as well
+## Remove uncorrelated variables
+ TEST.DATA.REM <- TEST.DATA[ , !(names(TEST.DATA) %in% VAR.REM)]
+## Remove all NA
+ TEST.DATA.SCALED <- na.omit(TEST.DATA.REM)
+ ## Replace the categorical variables
+## Loop over all variables
+for( icol in 1:ncol(TEST.DATA.SCALED) ){
+  ## Consider categorical variables
+if( class(TEST.DATA.SCALED[,icol]) != "character" ) next()
+## List the unique values
+    COL.DAT <- TEST.DATA.SCALED[,icol]
+ UNIQ.VAL <- unique(COL.DAT)
+  NB.UNIQ.VAL <- length(UNIQ.VAL)
+  ## Replace their values by an integer
+ for( ival in 1:NB.UNIQ.VAL){
+   COL.DAT[COL.DAT==UNIQ.VAL[ival]] = ival
+    TEST.DATA.SCALED[,icol] <- as.numeric(COL.DAT)
+ }
+}
+ ## Some variables are then constant, let's remove them
+TEST.DATA.SCALED <- TEST.DATA.SCALED[,apply(TEST.DATA.SCALED, 2, var, na.rm=TRUE) != 0]
+## Loop over all variables
+for( icol in 1:ncol(TEST.DATA.SCALED) ){
+  ## Keep the response raw
+    if( colnames(TEST.DATA.SCALED)[icol] == "PEARNVAL") next()
+  ## Scale the predictor variables by doing X = (X - max(X) / (max(X)-min(X))
+  MIN <- min(TEST.DATA.SCALED[,icol])
+  MAX <- max(TEST.DATA.SCALED[,icol])
+   TEST.DATA.SCALED[,icol] <- (TEST.DATA.SCALED[,icol] - MIN) / ( MAX - MIN )
+}
+
+```
+
+and run the predictive methods on it:
+```{r,message=FALSE,warning=FALSE}
+## Prediction
+PRED.LIN.TEST <- predict( PRED.LIN, TEST.DATA.SCALED )
+PRED.NN.TEST <- predict( PRED.NN, TEST.DATA.SCALED )
+PRED.DT.TEST <- predict( PRED.DT, TEST.DATA.SCALED )
+## Add the prediction to the dataset
+TEST.DATA.SCALED$pred.lin <- PRED.LIN.TEST
+TEST.DATA.SCALED$pred.nn <- PRED.NN.TEST
+TEST.DATA.SCALED$pred.dt <- PRED.DT.TEST
+```
+
+Now let's apply the cut-off determined in the learning set and check the sensitivity and specificity:
+
+```{r,message=FALSE,warning=FALSE}
+N <- nrow(TEST.DATA.SCALED)
+SENS.LIN.TEST <- nrow(subset(TEST.DATA.SCALED, pred.lin < CUT.LIN & PEARNVAL == 1 )) / N
+SPE.LIN.TEST <- nrow(subset(TEST.DATA.SCALED, pred.lin >= CUT.LIN & PEARNVAL == 2 )) / N
+SENS.NN.TEST <- nrow(subset(TEST.DATA.SCALED, pred.nn < CUT.NN & PEARNVAL == 1 )) / N
+SPE.NN.TEST <- nrow(subset(TEST.DATA.SCALED, pred.nn >= CUT.NN & PEARNVAL == 2 )) / N
+SENS.DT.TEST <- nrow(subset(TEST.DATA.SCALED, pred.dt < CUT.DT & PEARNVAL == 1 )) / N
+SPE.DT.TEST <- nrow(subset(TEST.DATA.SCALED, pred.dt >= CUT.DT & PEARNVAL == 2 )) / N
+## Plot these values
+plot( 0, xlab="Sensitivity",ylab="Specificity",xlim=c(0.5,1),ylim=c(0,0.2),col="white")
+grid(col = "gray",lty = "dotted")
+points(SENS.LIN.TEST, SPE.LIN.TEST,col="red",pch=1, cex=2)
+points(SENS.NN.TEST, SPE.NN.TEST,col="blue",pch=1, cex=2)
+points(SENS.DT.TEST, SPE.DT.TEST,col="green",pch=1, cex=2)
+points(SENS.LIN, SPE.LIN,col="red",pch=20, cex=2)
+points(SENS.NN, SPE.NN,col="blue",pch=20, cex=2)
+points(SENS.DT, SPE.DT,col="green",pch=20, cex=2)
+legend(x=0.5,y=0.15,col = c("red","blue","green","black","black"),legend = c("Linear","Neural network","Decision tree","Train","Test"), cex=0.7,pt.cex=1,pch=c(20,20,20,20,1), bty="n")
+```
+
+The performances are similar with the testing dataset, which ensures a reliable training of the predictive tools. I would however recommand further analysis with more shuffled dataset and the training of independant subsets. The decision tree seems not to have suffered of any over-training, which is a sign of reliable training given the high sensitivity of this tool to over-training. 
