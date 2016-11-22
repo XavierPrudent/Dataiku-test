@@ -25,9 +25,9 @@ library("pROC")
 ## Download the data
 URL <- "http://thomasdata.s3.amazonaws.com/ds/us_census_full.zip"
 DESTFILE <- "us_census_full.zip"
-#download.file( url = URL, destfile = DESTFILE )
+download.file( url = URL, destfile = DESTFILE )
 ## Unzip the data file
-#unzip( DESTFILE )
+unzip( DESTFILE )
 ```
 
 ## Visualization of the data
@@ -39,8 +39,8 @@ The names and position of the columns have been extracted and checked by hand, e
 LEARN.DATA <- "us_census_full/census_income_learn.csv"
 
 ## Replace question marks by NA, and remove white spaces
-#system(paste("sed s/\'?\'/'NA'/g",LEARN.DATA,"> foo; mv foo", LEARN.DATA))
-#system(paste("sed s/\' \'//g",LEARN.DATA,"> foo; mv foo", LEARN.DATA))
+system(paste("sed s/\'?\'/'NA'/g",LEARN.DATA,"> foo; mv foo", LEARN.DATA))
+system(paste("sed s/\' \'//g",LEARN.DATA,"> foo; mv foo", LEARN.DATA))
 
 ## Open the learning dataset
 LEARN.DATA <- read.csv(LEARN.DATA, stringsAsFactors=FALSE)
